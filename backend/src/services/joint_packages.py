@@ -26,13 +26,21 @@ def create_package(db,data,user):
     plan_ids=data.plan_ids
     if len(plan_ids)<2: raise HTTPException(422,'联合检验包至少选择 2 个方案')
     if len(set(plan_ids))!=len(plan_ids): raise HTTPException(422,'同一检验包内方案不能重复，请去掉重复方案')
+    # 在 PostgreSQL 中锁住所选方案和成绩行，确保方案口径与样本快照来自同一可观察时点；
+    # 修订请求等待建包事务提交后再执行，避免联合包混入两个从未同时存在的版本。
+    plan_stmt=select(Plan).where(Plan.id.in_(plan_ids)).order_by(Plan.id)
+    student_stmt=select(Student).order_by(Student.code)
+    if db.bind.dialect.name=='postgresql':
+        plan_stmt=plan_stmt.with_for_update()
+        student_stmt=student_stmt.with_for_update()
+    locked_plans={p.id:p for p in db.scalars(plan_stmt).all()}
     plans=[]
     for plan_id in plan_ids:
-        plan=db.get(Plan,plan_id)
+        plan=locked_plans.get(plan_id)
         if not plan: raise HTTPException(404,f'方案 {plan_id} 不存在')
         plans.append(plan)
     # 同一时点样本快照：建包瞬间的全量学员成绩，后续修订不影响本包
-    students=db.scalars(select(Student).order_by(Student.code)).all()
+    students=db.scalars(student_stmt).all()
     student_snapshot=[{'code':s.code,'name':s.name,'campus':s.campus,'group':s.group,
                        'score':s.score,'absent':s.absent} for s in students]
     now=_now()

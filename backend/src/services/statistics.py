@@ -15,7 +15,7 @@ def welch(students,plan):
     v1=sum((x-m1)**2 for x in treatment)/(n1-1)
     se2=v0/n0+v1/n1
     if se2<=0: raise ValueError('两组方差均为零，无法进行 Welch 检验')
-    df=se2**2/((v0/n0)**2/(n0-1)+(v1/n0)**2/(n1-1))
+    df=se2**2/((v0/n0)**2/(n0-1)+(v1/n1)**2/(n1-1))
     se=math.sqrt(se2);delta=m1-m0;t=delta/se
     p=float(2*stats.t.sf(abs(t),df))
     margin=float(stats.t.ppf(.975,df))*se
