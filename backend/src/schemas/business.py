@@ -24,3 +24,14 @@ class RunInput(BaseModel):
 class ConclusionInput(BaseModel):
     conclusion:str=Field(min_length=4,max_length=3000)
     published:bool=False
+class JointPackageInput(BaseModel):
+    title:str=Field(min_length=2,max_length=120)
+    plan_ids:list[int]=Field(min_length=2,max_length=20)
+    @model_validator(mode='after')
+    def unique_plans(self):
+        if len(set(self.plan_ids))!=len(self.plan_ids):
+            raise ValueError('同一检验包内方案不能重复')
+        return self
+class PackageConclusionInput(BaseModel):
+    conclusion:str=Field(min_length=4,max_length=3000)
+    published:bool=False

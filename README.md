@@ -5,7 +5,7 @@
 ## 业务场景
 知行职教有城东、城西、滨江、高新 4 个教学点。原流程由教学点导出成绩表，分析员复制进工作簿计算，再将截图发给负责人。三类痛点是：排除缺考时容易丢失口径、方案与结果脱节、签核结论没有当时的样本证据。上游是教学点期末成绩；本应用替代手工核对与计算；下游由教研负责人决定是否扩大辅导试点。
 
-四个业务模块：**成绩样本**支持筛选、录入和修订；**辅导分组**登记研究范围和排除规则；**检验工作台**提交后台任务并查看失败原因与历史结果；**教研结论**起草解释、负责人签核并下载包括原始样本快照的 JSON 报告。业务数据均在 PostgreSQL 中持久化，统计由 Python worker 计算。
+四个业务模块：**成绩样本**支持筛选、录入和修订；**辅导分组**登记研究范围和排除规则；**检验工作台**提交后台任务并查看失败原因与历史结果；**教研结论**起草解释、负责人签核并下载包括原始样本快照的 JSON 报告。第五个模块**联合检验包**把同一教研轮次的多个方案一次性封存联合检验，逐项给出原始结论并按 Holm 校正控制整体 5% 误报率，整包成功后由负责人一次性签核发布。业务数据均在 PostgreSQL 中持久化，统计由 Python worker 计算。
 
 ## 启动
 ```sh
@@ -51,7 +51,7 @@ seed 使用 Random(20261115)：160 名学员，4 教学点、各 80 人两组、
 |数据与队列|PostgreSQL 16、Redis 7，独立 Python worker|
 |认证|PyJWT 2.10.1、PBKDF2|
 
-`frontend/src/api` 负责请求，`stores` 管业务状态，`pages` 分四页，`components/common` 复用结果、表格、状态和通知，`hooks` 封装表单/轮询，`utils` 做转义/下载。`backend/src/models` 定义表，`schemas` 验证，`services` 处理业务与算法，`routes` 提供接口，`controllers` 序列化，`middlewares` 处理审计和全局错误。`backend/migrations/001_initial.sql` 是初始结构；启动使用 metadata.create_all，后续字段迁移需人工管理。
+`frontend/src/api` 负责请求，`stores` 管业务状态，`pages` 分五页（含联合检验包），`components/common` 复用结果、表格、状态和通知，`hooks` 封装表单/轮询，`utils` 做转义/下载。`backend/src/models` 定义表，`schemas` 验证，`services` 处理业务与算法（`statistics` 为 Welch/Holm，`processing` 为后台拾取、失败重试与中断回收），`routes` 提供接口，`controllers` 序列化，`middlewares` 处理审计和全局错误。`backend/migrations/001_initial.sql` 与 `002_joint_packages.sql` 是结构脚本；启动使用 metadata.create_all，既有库新增字段需人工执行迁移。
 
 共享枚举位置：角色 ROLES、分组 GROUPS、报告状态 REPORT_STATUSES 在 `backend/src/constants/enums.py`；前端对应 `frontend/src/constants/enums.js` 的 ROLES、GROUPS、STATUS。API输入的 group 枚举同时在 `backend/src/schemas/business.py` 校验。
 
@@ -63,7 +63,16 @@ seed 使用 Random(20261115)：160 名学员，4 教学点、各 80 人两组、
 ## 本地开发
 后端在 Python3.11 虚拟环境运行 `pip install -r backend/requirements.txt`，设置 DATABASE_URL、REDIS_URL、JWT_SECRET，进入 backend 后运行 `uvicorn src.main:app --reload` 和另一个终端 `python -m src.worker`。前端无打包步骤，可直接由 Nginx 提供静态文件并代理 /api/。
 
+## 联合检验包与 Holm 校正
+同一轮教研若把多份显著报告分别采纳，会因重复检验夸大辅导效果。联合检验包解决这一口径问题：
+
+- **建包即封存**：至少选择 2 个方案且不可重复。建包瞬间封存所选方案口径（教学点、排除缺考规则等）与同一时点的全量成绩快照。之后成绩或方案仍可正常修订，修订与封存并发但不混版；包内重算始终读取封存快照，与当前表数据隔离。
+- **逐项计算 + Holm 校正**：worker 对每个检验项用封存样本独立做 Welch 检验，保留各自的样本量、差值、p 值、效应量和 SHA-256；全部成功后对整族原始 p 值做 Holm 逐步降序校正，把族系整体误报率（FWER）控制在 α=0.05，页面同时展示逐项**原始结论**与**校正后结论**（校正排名、调整 p 值、校正后是否显著）。
+- **整包失败不删项**：任一检验项因缺样本（每组不足 2 条）或零方差失败，整包标记失败，但所有检验项（含失败项及其可读原因、尝试次数）都保留。失败后**沿原包恢复**：重试只重算未完成项，成功项不重复计算，全程不新建包、不新建报告。worker 启动时自动把中断在 running 的任务/检验包回收为 queued。
+- **状态与权限**：包状态为 `待计算 → 计算中 → 待发布 → 已发布`（失败回到 `整包失败` 待重试）。所有角色可查进度；分析员可建包、重试、起草结论，但任何成员都不能对单个检验项单独签核或导出；仅负责人（admin）能整包签核，整包成功后**一次性发布**，发布后才允许下载 `tutor-effect-joint-package-<id>.json`。
+- **独立报告保留**：检验工作台的单方案独立报告流程、签核与导出完全保留，与联合检验包互不影响。
+
 ## 已知范围
-不含 CSV 批量导入、随机分组器或多重比较校正；成绩可逐条录入/修订。教学点为自由文本，前端方案选项来自现有成绩。初始报告为同步真实计算的演示快照，新提交报告全部走异步 worker。外网字体不可用时使用本地 serif 回退。进程中断在 running 状态的任务需管理员在数据库重置为 queued；当前小型版本未提供任务取消/自动回收。审计列表只给管理员，最多最近 100 条。
+不含 CSV 批量导入或随机分组器；成绩可逐条录入/修订。多重比较校正已由联合检验包的 Holm 流程覆盖。教学点为自由文本，前端方案选项来自现有成绩。初始报告为同步真实计算的演示快照，新提交报告全部走异步 worker。外网字体不可用时使用本地 serif 回退。worker 启动自动回收中断在 running 状态的任务（重置为 queued，成功项不重算）。审计列表只给管理员，最多最近 100 条。
 
 License: MIT（见 LICENSE）。真实验收证据在批次根 `test-artifacts/gb-3103/`，源码目录不含截图或测试报告。
